@@ -9,7 +9,8 @@ const crypto = require('crypto');
 const {
   CHROME_DEBUG_HOST,
   CHROME_DEBUG_PORT,
-  rewriteWsUrl
+  rewriteWsUrl,
+  WS_OVERRIDE_ENABLED
 } = require('./host-override');
 
 // Minimal WebSocket client implementation (dependency-free)
@@ -177,7 +178,7 @@ async function chromeHttp(path, method = 'GET') {
 async function resolveWsUrl(wsUrlOrIndex) {
   // If it's already a WebSocket URL, return it
   if (typeof wsUrlOrIndex === 'string' && wsUrlOrIndex.startsWith('ws://')) {
-    return rewriteWsUrl(wsUrlOrIndex);
+    return wsUrlOrIndex;
   }
 
   // If it's a number (tab index), resolve it
@@ -266,17 +267,17 @@ async function getTabs() {
   }
   return tabs
     .filter(tab => tab.type === 'page')
-    .map(tab => ({
-      ...tab,
-      webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl)
-    }));
+    .map(tab => WS_OVERRIDE_ENABLED
+      ? { ...tab, webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl) }
+      : tab
+    );
 }
 
 async function newTab(url = 'about:blank') {
   const encoded = encodeURIComponent(url);
   const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
   if (tab && typeof tab === 'object') {
-    tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl);
+    tab.webSocketDebuggerUrl = WS_OVERRIDE_ENABLED ? rewriteWsUrl(tab.webSocketDebuggerUrl) : tab.webSocketDebuggerUrl;
   }
   return tab;
 }
