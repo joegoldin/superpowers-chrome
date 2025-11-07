@@ -6,6 +6,12 @@
 const http = require('http');
 const crypto = require('crypto');
 
+const {
+  CHROME_DEBUG_HOST,
+  CHROME_DEBUG_PORT,
+  rewriteWsUrl
+} = require('./host-override');
+
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
   constructor(url) {
@@ -137,13 +143,11 @@ class WebSocketClient {
 
 // Helper to make HTTP requests to Chrome
 async function chromeHttp(path, method = 'GET') {
-  const url = new URL(`http://localhost:9222${path}`);
-
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname + url.search,
+      hostname: CHROME_DEBUG_HOST,
+      port: CHROME_DEBUG_PORT,
+      path,
       method: method
     };
 
@@ -173,14 +177,13 @@ async function chromeHttp(path, method = 'GET') {
 async function resolveWsUrl(wsUrlOrIndex) {
   // If it's already a WebSocket URL, return it
   if (typeof wsUrlOrIndex === 'string' && wsUrlOrIndex.startsWith('ws://')) {
-    return wsUrlOrIndex;
+    return rewriteWsUrl(wsUrlOrIndex);
   }
 
   // If it's a number (tab index), resolve it
   const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
-    const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = await getTabs();
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
@@ -258,16 +261,29 @@ async function sendCdpCommand(wsUrl, method, params = {}) {
 
 async function getTabs() {
   const tabs = await chromeHttp('/json');
-  return tabs.filter(tab => tab.type === 'page');
+  if (!Array.isArray(tabs)) {
+    return [];
+  }
+  return tabs
+    .filter(tab => tab.type === 'page')
+    .map(tab => ({
+      ...tab,
+      webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl)
+    }));
 }
 
 async function newTab(url = 'about:blank') {
-  return await chromeHttp(`/json/new?${url}`, 'PUT');
+  const encoded = encodeURIComponent(url);
+  const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
+  if (tab && typeof tab === 'object') {
+    tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl);
+  }
+  return tab;
 }
 
 async function closeTab(tabIndexOrWsUrl) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const tabs = await chromeHttp('/json');
+  const tabs = await getTabs();
   const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
   if (tab) {
     await chromeHttp(`/json/close/${tab.id}`, 'GET');
@@ -507,7 +523,7 @@ async function startChrome() {
   const userDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
 
   const proc = spawn(chromePath, [
-    `--remote-debugging-port=9222`,
+    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
